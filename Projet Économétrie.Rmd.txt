@@ -1,0 +1,666 @@
+---
+title: "Projet Warkhia DIAKHO  & Candice OSSETE"
+subtitle: "Quels sont les déterminants socio-démographiques et physiologiques influençant
+  la prévalence du diabète chez les femmes ?"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+## 1. Introduction
+Le diabète est une maladie chronique qui touche une part croissante de la population mondiale. Caractérisé par un excès de sucre dans le sang, il est un enjeu majeur de santé publique. L'objectif de ce projet est d'explorer les facteurs biologiques et physiologiques qui influencent l'apparition de cette maladie chez les femmes.
+
+Nous chercherons à comprendre comment des indicateurs comme l'indice de masse corporelle (IMC), le taux de glucose ou l'âge interagissent pour définir un profil de risque. En mobilisant les outils étudier en econometrie  nous tenterons de mettre en évidence des corrélations significatives et de construire des modèles de prédiction .
+
+## Présentation des données
+
+Pour cette étude, nous utilisons une base de données médicale regroupant les informations de 768 patientes. Ce jeu de données comprend 9 variables initiales qui nous permettent d'explorer les dynamiques de santé.
+
+### Les variables étudiées
+
+Nous avons traduit puis classé nos variables pour structurer l'analyse :
+```{r,include=FALSE}
+install.packages("googlesheets4")
+library(googlesheets4)
+gs4_deauth()
+url_sheet <- "https://docs.google.com/spreadsheets/d/1utbi2il5PCUboPI2GLgnftBVlz6EROpObRgDwY-xBqI/edit?usp=sharing"
+diabetes_2 <- read_sheet(url_sheet)
+
+
+install.packages("dplyr")
+library(dplyr)
+install.packages("ggplot2")
+library(ggplot2)
+install.packages("tidyverse")
+library(tidyverse)
+install.packages("moments")
+library(moments)
+install.packages("FactoMineR")
+library(FactoMineR)
+install.packages("factoextra")
+library(factoextra)
+install.packages("NbClust")
+library(NbClust)
+
+```
+
+```{r}
+diabetes <- diabetes_2 %>% rename(
+    grossesses = Pregnancies,
+    glucose = Glucose,
+    pression_arterielle = BloodPressure,
+    epaisseur_peau = SkinThickness,
+    insuline = Insulin,
+    imc = BMI,
+    indice_risque_héréditaire = DiabetesPedigreeFunction,
+    age = Age,
+    resultat = Outcome
+)
+head(diabetes)
+
+```
+### Description des observations
+```{r}
+dim(diabetes)
+
+```
+
+* **Nombre d'observations** : 768 patientes.
+* **Nombre de variables** : 9 colonnes (8 variables explicatives et 1 variable cible).
+
+```{r}
+head(diabetes_2)
+```
+
+
+* **Variables Quantitatives** : 
+    * Glucose: Taux de glucose plasmatique.
+    * BMI (IMC) : Indice de masse corporelle.
+    * Age : Âge de la patiente.
+    * Insulin : Taux d'insuline.
+* **Variables Qualitatives ( 3 dernières créées pour l'étude)** :
+    * Outcome : État de santé (0 : Non diabétique, 1 : Diabétique).
+    * Multiparite : L'âge découpé en 4 tranches (Moins de 25, 25-35, 35-50, 50+).
+    * Corpulence : État de l’IMC (supérieur ou inférieur a 25)
+    * Enceinte_Deja : Variable indiquant si la femme a déjà été enceinte au moins une fois.
+```{r}
+#Groupe d'âge
+diabetes$groupe_age <- "Moins de 25"
+diabetes$groupe_age[diabetes$age >= 25 & diabetes$age < 35] <- "25-34"
+diabetes$groupe_age[diabetes$age >= 35 & diabetes$age < 50] <- "35-49"
+diabetes$groupe_age[diabetes$age >= 50] <- "50 et plus"
+diabetes$groupe_age <- factor(diabetes$groupe_age, levels = c("Moins de 25", "25-34", "35-49", "50 et plus"))
+
+# Corpulence
+diabetes$corpulence <- "IMC normal"
+diabetes$corpulence[diabetes$imc >= 25] <- "Surpoids ou obésité"
+diabetes$corpulence <- as.factor(diabetes$corpulence)
+
+# Enceinte_Deja
+diabetes$enceinte_deja <- "Jamais enceinte"
+diabetes$enceinte_deja[diabetes$grossesses >= 1] <- "Déjà enceinte"
+diabetes$enceinte_deja <- as.factor(diabetes$enceinte_deja)
+                                    
+                                    
+                                    
+summary(diabetes$groupe_age)
+
+summary(diabetes$corpulence)
+
+summary(diabetes$enceinte_deja)
+
+```
+   Corpulence:
+   Il ya 651 femmes en surpoids ( ce qui est un facteur qui influence la resitance à l’insuline que nous étudirons plus tard)
+    
+    Groupe d’âge :
+Il y a 269 femmes âgées entre 25 et 34 ans, 219 femmes de moins de 25 ans, 191 femmes âgées entre 35 et 49 ans et 89 femmes de 50 ans et plus.
+Enceinte_Deja :
+Il y a 657 femmes ayant déjà été enceintes au moins une fois, contre 111 femmes n’ayant jamais été enceintes.
+
+
+* **Variables Manquantes**: Nous avons identifié des variables comme un IMC un taux de glucose et une
+pression artérielle, insuline et épaisseur de la peau égal à zéro est impossible pour en être humain donc
+nous les considérons comme des données manquantes 
+
+```{r}
+
+diabetes$imc[diabetes$imc == 0] <- NA
+diabetes$glucose[diabetes$glucose == 0] <- NA
+diabetes$pression_arterielle[diabetes$pression_arterielle == 0] <- NA
+diabetes$insuline[diabetes$insuline == 0] <- NA
+diabetes$epaisseur_peau[diabetes$epaisseur_peau == 0] <- NA
+
+
+diabetes_clean <- diabetes %>% filter(!is.na(glucose)) %>% filter(!is.na(imc))%>% filter(!is.na(pression_arterielle))
+```
+
+## Objectifs de l'analyse
+
+L'enjeu de ce projet est de répondre à plusieurs questions :
+
+*  **Profilage** : Quelle est la répartition des indicateurs de santé au sein de l'échantillon ?
+*  **Corrélation** : Existe-t-il un lien statistiquement prouvé entre l'IMC, l'âge et le diabète ?
+*  **Prédiction** : Peut-on prédire avec précision la probabilité d'être diabétique en fonction du profil biologique d'une patiente via une régression logistique ?
+*  **Typologie** : Peut-on regrouper les patientes par groupes de similarités grâce à l'analyse multivariée (ACP) ?
+
+
+## 2. Analyse Univariée
+
+### 2.a Variable Glucose
+
+```{r}
+# Indicateurs de tendance centrale
+cat("Moyenne :", mean(diabetes$glucose, na.rm = TRUE), "\n")
+cat("Médiane :", median(diabetes$glucose, na.rm = TRUE), "\n")
+
+# Indicateurs de dispersion
+cat("Variance :", var(diabetes$glucose, na.rm = TRUE), "\n")
+cat("Ecart-type :", sd(diabetes$glucose, na.rm = TRUE), "\n")
+cat("Etendue :", range(diabetes$glucose, na.rm = TRUE), "\n")
+cat("Ecart interquartile :", IQR(diabetes$glucose, na.rm = TRUE), "\n")
+
+# Indicateurs de forme
+cat("Asymétrie (Skewness) :", skewness(diabetes$glucose), "\n")
+cat("Aplatissement (Kurtosis) :", kurtosis(diabetes$glucose), "\n")
+
+```
+ Tendance centrale :
+ Moyenne (120.89) : Le taux de glucose moyen des femmes de l’échantillon est de 120.89 mg/dL, ce qui est légèrement au-dessus du seuil normal (100 mg/dL).
+ 
+Médiane (117) : La moitié des femmes ont un taux de glucose inférieur à 117 mg/dL. La moyenne et la médiane sont proches, ce qui suggère une distribution relativement symétrique.
+
+Dispersion :
+ Variance (1022.25) : La variance est élevée, ce qui indique une forte dispersion des valeurs autour de la moyenne.
+ 
+Ecart-type (31.97) : En moyenne, les valeurs de glucose s’écartent d’environ 32 mg/dL par rapport à la moyenne.
+
+ Etendue (0 - 199) : Les valeurs vont de 0 à 199 mg/dL. La valeur 0 est une donnée manquante.
+
+Ecart interquartile (41.25) : 50% des femmes ont un taux de glucose compris entre 99 et 140 mg/dL environ.
+
+Autres 
+
+Skewness (0.17) : La distribution du glucose est quasi symétrique, avec un skewness de 0.17 très proche de 0. Cela signifie qu’il y a autant de femmes ayant un taux de glucose faible que de femmes ayant un taux de glucose élevé par rapport à la moyenne.
+
+Kurtosis (3.63) : Avec un kurtosis de 3.63, très proche de la valeur de référence de 3, la distribution du glucose suit une forme quasi normale. Les valeurs sont légèrement concentrées autour de la moyenne de 120.89 mg/dL, sans valeurs extrêmes particulièrement marquées.
+
+
+```{r}
+head(diabetes_2)
+
+```
+
+
+```{r}
+# Histogramme
+ggplot(diabetes, aes(x = glucose)) +
+  geom_histogram(binwidth = 10, fill = "steelblue", color = "white") +
+  labs(title = "Distribution du glucose", x = "Glucose", y = "Effectif")
+```
+
+
+
+La distribution est principalement concentrée entre 100 et 125 mg/dL. On observe toutefois une traîne vers les valeurs élevées (jusqu'à 200 mg/dL) et une anomalie marquée par la présence de valeurs nulles (0 mg/dL) qu'il faudra traiter.
+```{r}
+# Courbe de densité
+ggplot(diabetes, aes(x = glucose)) +
+  geom_density(fill = "steelblue", alpha = 0.5) +
+  labs(title = "Courbe de densité du glucose", x = "Glucose", y = "Densité")
+```
+La courbe confirme un profil unimodal avec une asymétrie positive (vers la droite). Cette allure montre que, bien que la majorité de l'échantillon soit regroupée autour de la moyenne, une partie non négligeable de la population présente des taux de glucose élevés.
+```{r}
+# Boxplot
+ggplot(diabetes, aes(y = glucose)) +
+  geom_boxplot(fill = "steelblue") +
+  labs(title = "Boxplot du glucose", y = "Glucose")
+```
+Le boxplot met en évidence une médiane à environ 117 mg/dL et une dispersion importante (IQR : 100-140 mg/dL). La valeur "0" est clairement identifiée comme un point aberrant qui correspond à une donnée manquante.
+
+## 2.B Variable IMC
+
+La variable IMC indique si la personne concernée est en surpods ou non. Cette variable étant qualitative pour l'analyser nous allons réaliser un tableau de fréquence ainsi qu'un histogramme.
+
+```{r}
+prop.table(table(diabetes$corpulence)) * 100
+```
+Il y a environ 15% de personnes possédant une corpulence dite normale contre environ 85% en surpoids ou obésité soit presque 6 fois plus. La population de cet échantillon est donc exposée à un risque élevé de contracter le diabète.En effet, le surpoids favorise la résistance à l'insuline créant ainsi le développement du diabète notamment de type 2. 
+
+```{r}
+ggplot(diabetes, aes(x = corpulence)) +
+  geom_bar(fill = "orange") +
+  labs(title = "Répartition de la corpulence",
+       x = "Corpulence", y = "Effectif")
+
+```
+Le diagramme confirme le déséquilibre entre l'effectif des femmes en situation de surpoids ou d'obésité avec celui de celles ayant une corpulence normale qui sont en minorité.
+
+## 3. Analyse de la dépendance
+
+Nous allons à présent analyser le lien entre le fait d’avoir déjà été enceinte et le diabète. Pour cela, nous allons croiser la variable enceinte_deja avec la variable resultat à l’aide d’un tableau de contingence, puis visualiser cette relation grâce à un graphique en mosaïque afin de voir si le fait d’avoir déjà été enceinte influence la proportion de femmes diabétiques
+
+```{r}
+table(diabetes$enceinte_deja, diabetes$resultat)
+
+```
+
+Parmi les femmes qui ont déjà enceintes, 230/657 soit environ 35% sont diabétiques.
+Parmi les femmes qui n'ont  jamais été enceintes, 38/111 soit environ 34% sont diabétiques.
+Les proportions sont quasi identiques, ce qui suggère que le fait d’avoir déjà été enceinte n’influence pas significativement le risque de diabète dans cet échantillon.
+
+```{r}
+#La moisaique n'a pas pu être realisé avec ggplot2 car la librairie ggmosaic n'est pas operationnelle sur posit cloud.
+mosaicplot(table(diabetes$enceinte_deja, diabetes$resultat),
+           main = "Multiparité vs Diabète",
+           xlab = "Enceinte déjà",
+           ylab = "Diabète",
+           color = c("blue", "red"))
+
+
+```
+
+
+La mosaique confirme ce qu’on avait observé dans le tableau de contingence. La barre “Déjà enceinte” est beaucoup plus large que celle “Jamais enceinte”, ce qui reflète que la grande majorité des femmes de l’échantillon a déjà été enceinte au moins une fois.
+Les proportions de diabétiques (rouge) et non diabétiques (bleu) sont quasi identiques dans les deux groupes, environ 35% de diabétiques dans chaque cas.
+On peut donc conclure que le fait d’avoir déjà été enceinte n’influence pas significativement la proportion de femmes diabétiques dans notre échantillon.
+
+## 4. Analyse Bivariée (Relations entre variables)
+
+
+## 4.A Relation entre l'IMC et l'âge( quantitative - quantitative)
+
+
+```{r}
+
+# Coefficient de corrélation
+diabetes$imc <- as.numeric(diabetes$imc)
+diabetes$imc[diabetes$imc > 100] <- NA
+
+cat("Coefficient de corrélation :", cor(diabetes$imc, diabetes$age, use = "complete.obs"), "\n")
+```
+```{r}
+# Nuage de points avec droite de régression
+
+diabetes$age <- as.numeric(as.character(diabetes$age))
+diabetes$imc <- as.numeric(as.character(diabetes$imc))
+
+diabetes_plot <- na.omit(diabetes[, c("age", "imc")])
+
+# Le graphique
+library(ggplot2)
+ggplot(diabetes_plot, aes(x = age, y = imc)) +
+  geom_point(color = "steelblue", alpha = 0.5) +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  labs(title = "Relation entre l'IMC et l'âge",
+       x = "Age", y = "IMC")
+
+
+```
+Comme on peut le voir sur ce graphique et a travvers le coefficient de corrélation entre l’IMC et l’âge qui est de 0.036. Cela indique qu’il n’existe quasiment aucune relation linéaire entre les deux variables la droite de régression est quasiment horizontale.
+```{r}
+# Modèle de régression linéaire simple
+modele <- lm(imc ~ age, data = diabetes)
+summary(modele)
+
+```
+Coefficient de l’âge (0.024) : Les femmes plus âgées de l’échantillon n’ont pas un IMC différent des femmes plus jeunes
+P-value (0.316) : La p-value est largement supérieure à 0.05, ce qui signifie que la relation entre l’âge et l’IMC n’est pas statistiquement significative.
+Le surpoids des femmes de cette étude ne s’explique donc pas par leur âge, c'est donc une piste a éliminé.
+
+## 4.B Relation entre le Glucose et le fait d'avoir été enceinte ou non (qualitative - quantitative )
+```{r}
+# Boxplot
+ggplot(diabetes, aes(x = enceinte_deja, y = glucose, fill = enceinte_deja)) +
+  geom_boxplot() +
+  labs(title = "Distribution du glucose selon le nombre de grossese",
+       x = "Nombres de grossesses", y = "Glucose (mg/dL)") +
+  theme(legend.position = "none")
+
+```
+Les deux boîtes sont quasiment au même niveau. La ligne centrale (la médiane) est située autour de 115-120 mg/dL pour les deux groupes.
+La distribution du glucose est très similaire, qu'une femme ait déjà été enceinte ou jamais. 
+```{r}
+# Histogramme par groupe
+ggplot(diabetes, aes(x = glucose, fill = enceinte_deja)) +
+  geom_histogram(binwidth = 10, position = "dodge") +
+  labs(title = "Distribution du glucose selon l'état de grossesse",
+       x = "Glucose (mg/dL)", y = "Effectif")
+```
+
+On remarque que le groupe "Déjà enceinte" (en rouge) est beaucoup plus nombreux mais la forme de la cloche est la même que pour le groupe "Jamais enceinte" (en bleu).
+ Les pics de fréquence se situent au même endroit (entre 100 et 125 mg/dL).
+```{r}
+# Moyenne du glucose par groupe
+diabetes %>%
+  group_by(enceinte_deja) %>%
+  summarise(moyenne_glucose = mean(glucose, na.rm = TRUE))
+
+
+```
+Moyenne (Déjà enceinte) : 120,54 mg/dL
+
+Moyenne (Jamais enceinte) : 123,00 mg/dL
+On a tendance a penseer que  diabète gestationnel peut parfois entraîner une persistance d'un taux de glucose élevé après la grossesse l'écart entre les deux moyennes environ 2,5 mg/dL, c'est tres faible, donc pour la grande majorité des femmesle taux de glucose s'est stabilisé a la fin de la grossesse.
+
+## 4.C Relation entre le surpoids et le diabète (Qualitative - Qualitative)
+
+Nous allons commencer par faire un tableau de contingence pour identifier et distinguer clairement la répartition des femmes diabétiques selon leur corpulence.Le but est de vérifier s'il y peut y avoir un lien entre le surpoids et cette maladie. Ensuite, nous le confirmerons avec l'utilisation d'un test du khi-2.
+
+```{r}
+table(diabetes$corpulence, diabetes$resultat)
+```
+
+On voit donc que parmi les femmes avec un IMC normal, 108 ne sont pas diabétiques contre 61 diabétiques.
+Parmi les femmes en surpoids ou obésité, 392 ne sont pas diabétiques contre 259 diabétiques.
+La proportion de diabétiques est légèrement plus élevée chez les femmes en surpoids (40%) que chez celles avec un IMC normal (36%), mais la différence reste faible.
+Cela fait sous entendre qu'il pourrait exister un lien entre corpulence et diabète, mais il n’est pas évident à l’œil nu. 
+
+Représentation graphique pour avoir une approche plus visuelle et instinctive : 
+
+```{r}
+ggplot(diabetes, aes(x = corpulence, fill = factor(resultat))) +
+  geom_bar(position = "fill") +
+  labs(title = "Corpulence et Diabète",
+       x = "Corpulence",
+       y = "Proportion",
+       fill = "Diabète")
+
+```
+On va maintenant vérifier s'il existe un lien statistique et significatif entre le poids et le diabète à l'aide d'un test de khi-2.
+
+```{r}
+chisq.test(table(diabetes$corpulence, diabetes$resultat))
+```
+
+Dans notre cas, on voit que la p-value est inférieure à 0.05. On peut donc conclure grâce à ce test qu’il y a un lien significatif entre le surpoids/l’obésité et le diabète, ce qui n’est pas dû au hasard. Les femmes en surpoids ou en obésité sont plus susceptibles d’être atteintes du diabète, ce qui concorde avec les connaissances médicales à ce sujet.
+
+## 4.D Relation entre l'IMC et le glucose (Quantitative - Quantitative)
+
+Après avoir montré précedemment le lien entre la corpulence et le diabète,on va maintenant voir l'influence qu'a l'IMC sur le gluocose.
+Tout d'abord nous alons faire un nuage de point. 
+
+```{r}
+
+diabetes_clean$imc <- as.numeric(as.character(diabetes_clean$imc))
+diabetes_clean$glucose <- as.numeric(as.character(diabetes_clean$glucose))
+
+ggplot(diabetes_clean, aes(x = imc, y = glucose)) +
+  geom_point() +
+  labs(title = "IMC vs Glucose")
+
+ggplot(diabetes_clean, aes(x = imc, y = glucose)) +
+  geom_point() +
+  labs(title = "IMC vs Glucose")
+
+```
+
+Le nuage de points met en évidence une disparité. 
+Néanmoins, il y a quand même une légère  d’augmentation du glucose quand l’IMC augmente. 
+On va réaliser une approche plus précise en calculant le coefficient de corrélation de Pearson , la liaison entre le glucose et l'IMC est donc faible ce qui confirme notre hypothèse graphique précedente. 
+
+```{r}
+cor(diabetes_clean$imc, diabetes_clean$glucose)
+```
+Le coefficient est environ égal à 0.22,le lien entre le glucose et l'IMC est donc faible mais reste existant(il s'agit du plus interressant qu'on a trouver a analyser).
+
+
+## 5. Modélisation: prédire le Glucose en fonction de l'IMC
+
+### 5.A Modèle de régression (équation + R²)
+
+
+```{r}
+
+
+# Modèle de régression linéaire simple
+modele_glucose <- lm(glucose ~ imc, data = diabetes)
+summary(modele_glucose)
+
+# Equation de la droite
+cat("Equation de la droite : GLUCOSE =", 
+    round(coef(modele_glucose)[1], 2), "+", 
+    round(coef(modele_glucose)[2], 2), "x IMC \n")
+
+# R²
+cat("R² :", summary(modele_glucose)$r.squared, "\n")
+
+```
+Equation de la droite (GLUCOSE = 92.21 + 0.90 x IMC) : Lorsque l’IMC est égal à 0, le taux de glucose de base est de 92.21 mg/dL. Pour chaque point supplémentaire d’IMC, le taux de glucose augmente en moyenne de 0.90 mg/dL.
+
+P-value (5.89e-10) : La p-value est très largement inférieure à 0.05, ce qui signifie que la relation entre l’IMC et le glucose est statistiquement significative. L’IMC a bien une influence sur le taux de glucose.
+
+R² (0.049) : L’IMC n’explique que 4.9% de la variation du glucose. Cela signifie que l’IMC seul est un prédicteur insuffisant du glucose.
+
+
+
+### 5.B Nuage de points avec droite de régression + Histogramme des résidus
+
+
+```{r}
+#  Histogramme des résidus
+ggplot(data.frame(residus = residuals(modele_glucose)), aes(x = residus)) +
+  geom_histogram(binwidth = 5, fill = "steelblue", color = "white") +
+  labs(title = "Histogramme des résidus", x = "Résidus", y = "Effectif")
+
+
+```
+L'histogramme des résidus présente une forme symétrique centrée sur zéro. Cela indique que les erreurs de prédiction du modèle sont équilibrées il y a une precision.
+```{r}
+# Nuage de points avec droite de régression
+ggplot(diabetes, aes(x = imc, y = glucose)) +
+  geom_point(color = "steelblue", alpha = 0.5) +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  labs(title = "Glucose en fonction de l'IMC",
+       x = "IMC", y = "Glucose (mg/dL)")
+
+```
+Ce nuage de points illustre la relation entre l'IMC et le taux de glucose. Contrairement à l'âge, nous observons ici une corrélation positive : la droite de régression rouge montre que le taux de glucose a tendance à s'élever à mesure que l'IMC augmente. L'IMC est donc  un facteur explicatif pertinent dans ce modèle de régression linéaire
+
+
+### 5.C  QQ-plot, Résidus vs valeurs ajustées et Courbe de densité des résidus
+
+
+```{r}
+
+#  QQ-plot
+ggplot(data.frame(residus = residuals(modele_glucose)), aes(sample = residus)) + stat_qq() + stat_qq_line(color = "red") + labs(title = "QQ-plot des résidus")
+
+
+```
+On constate que la majeure partie des points suit fidèlement la droite de référence, il ya quand même des dispérsion aux extrémités, on peut conclure que les tests statistiques sont fiables.
+```{r}
+#  Résidus vs valeurs ajustées
+ggplot(data.frame(fitted = fitted(modele_glucose), 
+                  residus = residuals(modele_glucose)), 
+       aes(x = fitted, y = residus)) +
+  geom_point(color = "steelblue", alpha = 0.5) +
+  geom_hline(yintercept = 0, color = "red") +
+  labs(title = "Résidus vs Valeurs ajustées", 
+       x = "Valeurs ajustées", y = "Résidus")
+
+
+```
+Les résidus sont répartis de manière aléatoire autour de la ligne zéro,. Cela signifie que la précision du modèle est constante, peu importe le niveau de glucose prédit, la régression linéaire est donc vrai.
+```{r}
+#  Courbe de densité des résidus
+ggplot(data.frame(residus = residuals(modele_glucose)), aes(x = residus)) +
+  geom_density(fill = "steelblue", alpha = 0.5) +
+  labs(title = "Densité des résidus", x = "Résidus", y = "Densité")
+
+
+```
+La courbe de densité montre la répartition des erreurs du modèle, comme le sommet de la courbe est centré sur 0 alors le modèle tombe juste dans la majorité des cas. La forme  en cloche confirme que les erreurs sont bien réparties=> Le model est fiable.
+
+
+## 6. Analyse Multivariée
+
+### 6.A Cercle de corrélations et analyse en composante principales
+
+Sur le cercle des corrélations,on voit que l'insuline ainsi que l'épaisseur de la peau sont très proche et donc fortement corrélées entre elles.
+Les variables grossesses et âge sont prochent et vont dans la même direcetion : les femmes plus agées ont eu plus de grossesses.
+L'IMC et le glucose ne sont pas très proche sur le cercle ce qui confirme le lien faible établit par le coefficient de corrélation (0.22).
+
+On va maintant s'intéresser à la projection des individus
+```{r}
+
+diabetes_quant2 <- diabetes[, c("grossesses", "glucose", "pression_arterielle",  "epaisseur_peau", "insuline", "imc", "indice_risque_héréditaire", "age", "resultat")]
+
+#ACP
+diabetes_quant <- as.data.frame(lapply(diabetes_quant2, as.numeric))
+
+acp <- PCA(diabetes_quant[, c("grossesses", "glucose", "pression_arterielle", "epaisseur_peau", "insuline", "imc", "indice_risque_héréditaire", "age")], scale.unit = TRUE, graph = FALSE)
+
+fviz_pca_ind(acp,geom.ind = "point",
+ col.ind = as.factor(diabetes_quant2$resultat),palette = c("steelblue", "pink"),legend.title = "Diabète",title = "Répartition des patientes selon le statut diabétique")
+
+
+```
+On remarque que les points bleus, qui représentent les non diabétiques, sont majoritaires et dispersés sur l’ensemble du graphique. Les points roses, représentant les diabétiques, sont également dispersés mais avec une concentration notable sur la partie droite vers la Dim1, ce qui correspond aux variables comme l’IMC ou encore le glucose. En bas à gauche, il y a une forte densité de points bleus. Ce sont les patientes jeunes, avec peu de grossesses et des indicateurs métaboliques (insuline/IMC) bas, correspondant au profil le moins susceptible d’être atteint du diabète.
+
+### 6.B Identification de profils de patientes par ACP et Classification K-means
+
+
+```{r}
+
+# Cercle de corrélation des variables
+fviz_pca_var(acp,
+             col.var = "contrib",
+             gradient.cols = c("blue", "yellow", "red"),
+             title = "Cercle de corrélation des variables")
+
+# Projection des patientes
+fviz_pca_ind(acp,
+             geom.ind = "point",
+             col.ind = "cos2",
+             gradient.cols = c("blue", "yellow", "red"),
+             title = "Projection des patientes")
+
+```
+Le cercle de corrélation montre que les variables se regroupent en deux axes . L’âge et les grossesses sonliés entre eux et contribuent le plus à la Dim1 (26.2%),une femme plus âgée a tendance à avoir eu plus de grossesses. L’IMC, l’épaisseur de peau et l’insuline pointent dans la même direction, ils ont un lien avec le surpoids. En revanche l’indice de risque héréditaire semble indépendant des autres variables.
+
+
+### 6.C Classification K-means
+
+
+```{r}
+diabetes$indice_risque_héréditaire <- as.numeric(
+  unlist(diabetes$indice_risque_héréditaire))
+diabetes$imc[diabetes$imc > 100] <- NA
+
+diabetes_quant_clean <- na.omit(diabetes[, c("grossesses", "glucose", "pression_arterielle","epaisseur_peau", "insuline", "imc", "indice_risque_héréditaire", "age")])
+
+# K-means
+diabetes_quant_scale <- scale(diabetes_quant_clean)
+set.seed(123)
+kmeans_result <- kmeans(diabetes_quant_scale, centers = 2, nstart = 25)
+#Visualisation des clusters 
+fviz_cluster(kmeans_result,
+             data = diabetes_quant_scale,
+             palette = c("steelblue", "red"),
+             main = "Classification des patientes en 2 groupes")
+
+data.frame(diabetes_quant_clean, cluster = as.factor(kmeans_result$cluster)) %>%
+  group_by(cluster) %>%
+  summarise(
+    glucose_moyen = mean(glucose),
+    imc_moyen = mean(imc),
+    age_moyen = mean(age)
+  )
+
+
+
+```
+L’algorithme K-means a séparé les patientes en deux groupes distincts. Le cluster 1 (en bleu, 707 patientes) présente un glucose moyen de 134.35 mg/dL, un IMC et un âge plus élevés => patientes à profil à risque.
+
+Le cluster 2 (en rouge) présente un glucose moyen plus faible de 113.30 mg/dL ce groupe correspond aux patientes au profil plus sain. Cela signifie que le glucose, l’IMC et l’âge sont des facteurs déterminants dans le risque diabétique.
+
+## 7. Modèle Prédictif
+
+### 7.A Régression linéaire multiple
+```{r}
+modele_multiple <- lm(glucose ~ age + imc + insuline, data = diabetes_clean)
+
+```
+```{r}
+summary(modele_multiple)
+```
+Le modèle est globalement significatif. Le R² est de 0.39, ce qui veut dire qu’il explique à 39% la variance du taux de glucose. C’est correct, néanmoins cela montre aussi qu’il reste 61% de la variation du glucose qui est expliquée par d’autres facteurs non inclus ici. La p-value de l’âge et de l’insuline indiquent que ces 2 variables sont extrêmement significatives. À contrario, l’IMC ne l’est pas, avec sa p-value de 0.058 supérieure au seuil classique de 0.05. La médiane des résidus est proche de 0 mais légèrement en dessous, ce qui signifie que le modèle a une légère tendance à surestimer le taux de glucose. Cependant, les valeurs Min (-70.95) et Max (71.90) sont assez élevées et écartées, ce qui indique la présence de quelques valeurs extrêmes où le modèle se trompe beaucoup.
+
+On va maintenant s'intéresser au graphque des résidus. 
+
+```{r}
+ggplot(modele_multiple, aes(.fitted, .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, color = "red") +
+  labs(title = "Résidus vs Valeurs ajustées" , x = "Valeurs ajustées", y = "Résidus")
+
+```
+Le graphique des résidus vs valeurs ajustées montre une distribution globalement centrée autour de zéro, ce qui valide l’hypothèse de linéarité du modèle. Cependant, on remarque que la dispersion des résidus augmente pour les valeurs ajustées élevées (au-delà de 200), ce qui signifie que la variance des erreurs n’est pas parfaitement constante. Le modèle est donc plus performant pour prédire les valeurs centrales de glucose que les valeurs extrêmes. De plus, quelques valeurs atypiques sont visibles, notamment des résidus dépassant ±40, indiquant des observations pour lesquelles le modèle se trompe davantage.”
+
+
+```{r}
+ggplot(modele_multiple, aes(sample = .resid)) +
+  stat_qq() +
+  stat_qq_line(color = "green") +
+  labs(title = "QQ-Plot des résidus", x = "Quantiles théoriques" , y = "Quantiles observées")
+
+```
+Le QQ - Plot est un graphique qui compare les résidus du modèle à une distribution normale théorique. Si les points suivent bien la droite verte, les résidus sont normaux. Ici,Les points suivent très bien la droite verte dans la partie centrale, ce qui indique que les résidus sont globalement normaux.
+Cependant on remarque des écarts aux extrémités.Cela confirme la présence de quelques valeurs atypiques déjà observées dans le graphique précédent, mais globalement les résidus sont corrects.
+
+### 7.B Régression Logistique
+
+```{r}
+
+# Modèle de régression logistique
+modele_logit <- glm(resultat ~ glucose + imc + age + grossesses + insuline + indice_risque_héréditaire,data = diabetes, family = binomial)
+
+summary(modele_logit)
+
+# Odds Ratio (pour interpréter "multiplie le risque par X")
+exp(coef(modele_logit))
+
+
+```
+On s'interresse a la colone pr(> Z) du sumary et on observe:
+Glucose (1.033) : Chaque unité supplémentaire de glucose multiplie le risque d’être diabétique par 1.033. C’est la variable la plus significative du modèle.
+
+IMC (1.083) : Chaque point supplémentaire d’IMC multiplie le risque d’être diabétique par 1.083. Le surpoids est donc un facteur de risque important.
+
+Grossesses (1.127) : Chaque grossesse supplémentaire multiplie le risque d’être diabétique par 1.127.
+
+Indice de risque héréditaire (2.439) :Un indice héréditaire élevé multiplie le risque d’être diabétique par 2.44, ce qui confirme le rôle important de la génétique dans le diabète.
+
+Insuline (0.998) : Chaque unité supplémentaire d’insuline multiplie le risque d’être diabétique par 0.998. L’insuline n’a donc quasiment aucun effet sur le risque diabétique dans notre modèlecontrairement a ce que aurais pu croire au debut de nortre analyse.
+
+Variable non significative (p-value > 0.05) :
+Age (0.178) : L’âge seul n’a pas d’effet significatif sur le risque diabétique dans notre modèle, probablement parce que son effet est déjà capté par les autres variables.
+
+
+## Conclusion
+À travers une analyse progressive, allant de l’analyse univariée jusqu’à la modélisation prédictive, nous avons pu conclure :
+
+L’analyse univariée du glucose a révélé un taux moyen de 120.89 mg/dL, supérieur au seuil normal de 100 mg/dL, ce qui constitue un premier signal sur une variable intéressante.
+L’analyse de l’IMC a quant à elle révélé que 85% des femmes de l’échantillon présentent un surpoids ou une obésité, plaçant d’emblée cette population dans une situation à risque élevé.
+
+
+L’analyse bivariée a permis de nuancer. Contrairement à ce qu’on aurait pu attendre, ni l’âge ni le fait d’avoir déjà été enceinte n’influence significativement le taux de glucose.
+En revanche, il existe une relation statistiquement significative entre l’IMC et le diabète, confirmée par le test du Khi-2 : le surpoids constitue un facteur de risque réel dans le développement du diabète. Cependant, le coefficient de corrélation de Pearson entre l’IMC et le glucose (r = 0.22) indique que ce lien n'est pas lineairement fort.
+La modélisation par régression linéaire multiple a confirmé que l’âge et l’insuline sont les variables les plus déterminantes pour expliquer le taux de glucose, tandis que l’IMC seul ne suffit pas. Le R² de 39% rappelle que le diabète est bien une maladie multifactorielle.
+
+
+L’analyse multivariée par ACP et K-means a permis d’aller plus loin en identifiant deux profils distincts de patientes. 
+Le cluster 2 regroupe les patientes à profil à risque avec un glucose moyen de 144 mg/dL, un IMC de 36.7 et un âge moyen de 38.7 ans, tandis que le cluster 1 correspond aux patientes au profil plus sain avec un glucose moyen de 109 mg/dL et un âge moyen de 26 ans. 
+Cette séparation confirme que l’âge, l’IMC et le glucose agissent ensemble pour définir un risque diabétique.
+
+
+Enfin, la régression logistique a permis d’identifier les déterminants les plus significatifs du diabète. 
+Le glucose, l’IMC, les grossesses et l’indice de risque héréditaire sont les facteurs les plus importants.
+En particulier, un indice héréditaire qui multiplie le risque d’être diabétique par 2.51 confirme que la génétique joue un rôle majeur dans cette maladie.
+L’âge, contrairement à ce que l’on pourrait croire, n’apparaît pas comme un facteur significatif dans notre analyse, son effet étant capté par les autres variables.
+
+
+En définitive, cette étude confirme que le diabète chez la femme est le résultat d’une combinaison de facteurs biologiques, physiologiques et héréditaires.
+Une prise en charge efficace de cette maladie consisterait à prioriser le contrôle du poids, la surveillance du glucose et l’évaluation du risque génétique.
+```{r}
+
